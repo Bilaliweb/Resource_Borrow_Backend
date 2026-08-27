@@ -1,0 +1,293 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "./generated"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ============================================================
+// NOTE: Using SQLite for local development.
+// Enums are represented as String fields with comments indicating valid values.
+// For production, switch provider to "postgresql" and uncomment enum definitions.
+// ============================================================
+
+// --- Enum value constants (for reference, enforced at app layer) ---
+// PlanTier: starter, growth, enterprise
+// BorrowRequestStatus: pending, approved, active, completed, rejected, cancelled
+// ApprovalStepStatus: pending, approved, rejected, skipped
+// ScheduleType: project_work, meeting, available, leave
+
+// ============================================================
+// Organization
+// ============================================================
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  planTier  String   @default("starter") // starter | growth | enterprise
+  createdAt DateTime @default(now())
+
+  users                     User[]
+  roles                     Role[]
+  departments               Department[]
+  projects                  Project[]
+  employeeSchedules         EmployeeSchedule[]
+  borrowRequests            BorrowRequest[]
+  approvalWorkflowTemplates ApprovalWorkflowTemplate[]
+  notifications             Notification[]
+  auditLogs                 AuditLog[]
+
+  @@map("organizations")
+}
+
+// ============================================================
+// User
+// ============================================================
+
+model User {
+  id           String   @id @default(uuid())
+  orgId        String
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  avatarUrl    String?
+  jobTitle     String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  organization                Organization          @relation(fields: [orgId], references: [id])
+  roles                       UserRole[]
+  managedDept                 Department?           @relation("DeptHead")
+  ownedProjects               Project[]
+  borrowRequestsAsEmployee    BorrowRequest[]       @relation("EmployeeRequests")
+  borrowRequestsAsFromManager BorrowRequest[]       @relation("FromManagerRequests")
+  borrowRequestsAsToManager   BorrowRequest[]       @relation("ToManagerRequests")
+  schedules                   EmployeeSchedule[]
+  approvalSteps               RequestApprovalStep[] @relation("ApproverSteps")
+  notifications               Notification[]
+  auditLogs                   AuditLog[]
+
+  @@map("users")
+}
+
+// ============================================================
+// Roles & Permissions (RBAC)
+// ============================================================
+
+model Role {
+  id           String  @id @default(uuid())
+  orgId        String
+  name         String // owner, hr_manager, department_head, manager, employee
+  isSystemRole Boolean @default(false)
+
+  organization  Organization           @relation(fields: [orgId], references: [id])
+  users         UserRole[]
+  permissions   RolePermission[]
+  workflowSteps ApprovalWorkflowStep[]
+
+  @@unique([orgId, name])
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(uuid())
+  key         String  @unique // e.g. "borrow_request.approve.dept_head"
+  description String?
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ============================================================
+// Department
+// ============================================================
+
+model Department {
+  id         String  @id @default(uuid())
+  orgId      String
+  name       String
+  headUserId String? @unique
+
+  organization Organization @relation(fields: [orgId], references: [id])
+  head         User?        @relation("DeptHead", fields: [headUserId], references: [id])
+
+  @@map("departments")
+}
+
+// ============================================================
+// Project
+// ============================================================
+
+model Project {
+  id          String @id @default(uuid())
+  orgId       String
+  name        String
+  ownerUserId String
+  status      String @default("active")
+
+  organization   Organization    @relation(fields: [orgId], references: [id])
+  owner          User            @relation(fields: [ownerUserId], references: [id])
+  borrowRequests BorrowRequest[]
+
+  @@map("projects")
+}
+
+// ============================================================
+// Employee Schedule
+// ============================================================
+
+model EmployeeSchedule {
+  id        String   @id @default(uuid())
+  userId    String
+  orgId     String
+  date      DateTime
+  startTime DateTime
+  endTime   DateTime
+  label     String
+  type      String // project_work | meeting | available | leave
+
+  user         User         @relation(fields: [userId], references: [id])
+  organization Organization @relation(fields: [orgId], references: [id])
+
+  @@map("employee_schedules")
+}
+
+// ============================================================
+// Borrow Request
+// ============================================================
+
+model BorrowRequest {
+  id            String   @id @default(uuid())
+  orgId         String
+  requestCode   String   @unique // e.g. BR-2024-048
+  employeeId    String
+  fromManagerId String
+  toManagerId   String
+  projectId     String
+  startDatetime DateTime
+  endDatetime   DateTime
+  reason        String
+  status        String   @default("pending") // pending | approved | active | completed | rejected | cancelled
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization  Organization          @relation(fields: [orgId], references: [id])
+  employee      User                  @relation("EmployeeRequests", fields: [employeeId], references: [id])
+  fromManager   User                  @relation("FromManagerRequests", fields: [fromManagerId], references: [id])
+  toManager     User                  @relation("ToManagerRequests", fields: [toManagerId], references: [id])
+  project       Project               @relation(fields: [projectId], references: [id])
+  approvalSteps RequestApprovalStep[]
+
+  @@map("borrow_requests")
+}
+
+// ============================================================
+// Approval Workflow (Configurable Templates)
+// ============================================================
+
+model ApprovalWorkflowTemplate {
+  id        String  @id @default(uuid())
+  orgId     String
+  name      String
+  isDefault Boolean @default(false)
+
+  organization Organization           @relation(fields: [orgId], references: [id])
+  steps        ApprovalWorkflowStep[]
+
+  @@map("approval_workflow_templates")
+}
+
+model ApprovalWorkflowStep {
+  id             String @id @default(uuid())
+  templateId     String
+  stepOrder      Int
+  roleRequiredId String
+  label          String
+
+  template     ApprovalWorkflowTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  roleRequired Role                     @relation(fields: [roleRequiredId], references: [id])
+
+  @@map("approval_workflow_steps")
+}
+
+// ============================================================
+// Request Approval Steps (Instances per request)
+// ============================================================
+
+model RequestApprovalStep {
+  id              String    @id @default(uuid())
+  borrowRequestId String
+  stepOrder       Int
+  approverUserId  String?
+  roleRequired    String
+  status          String    @default("pending") // pending | approved | rejected | skipped
+  comment         String?
+  resolvedAt      DateTime?
+
+  borrowRequest BorrowRequest @relation(fields: [borrowRequestId], references: [id], onDelete: Cascade)
+  approver      User?         @relation("ApproverSteps", fields: [approverUserId], references: [id])
+
+  @@map("request_approval_steps")
+}
+
+// ============================================================
+// Notifications
+// ============================================================
+
+model Notification {
+  id        String   @id @default(uuid())
+  orgId     String
+  userId    String
+  type      String
+  payload   String // JSON stored as string in SQLite
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id])
+  organization Organization @relation(fields: [orgId], references: [id])
+
+  @@map("notifications")
+}
+
+// ============================================================
+// Audit Log
+// ============================================================
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  orgId       String
+  actorUserId String
+  action      String
+  entityType  String
+  entityId    String
+  metadata    String   @default("{}") // JSON stored as string in SQLite
+  createdAt   DateTime @default(now())
+
+  actor        User         @relation(fields: [actorUserId], references: [id])
+  organization Organization @relation(fields: [orgId], references: [id])
+
+  @@map("audit_logs")
+}
